@@ -1,5 +1,5 @@
 // Copyright (c) 2014-2017 The Dash Core developers
-// Copyright (c) 2017-2018 The BitcoinNode Core developers
+// Copyright (c) 2017-2018 The BitNexus Core developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -146,21 +146,26 @@ bool CMasternode::UpdateFromNewBroadcast(CMasternodeBroadcast& mnb)
 // the proof of work for that block. The further away they are the better, the furthest will win the election
 // and get paid this block
 //
+
 arith_uint256 CMasternode::CalculateScore(const uint256& blockHash)
 {
-    uint256 aux = ArithToUint256(UintToArith256(vin.prevout.hash) + vin.prevout.n);
+     //2563215569
+    arith_uint256 prime = 2563215569;
+    uint256 aux = ArithToUint256(Modulo256(UintToArith256(vin.prevout.hash) + vin.prevout.n, prime));
 
     CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
     ss << blockHash;
-    arith_uint256 hash2 = UintToArith256(ss.GetHash());
+    arith_uint256 hash2 = Modulo256(UintToArith256(ss.GetHash()),prime);
 
     CHashWriter ss2(SER_GETHASH, PROTOCOL_VERSION);
     ss2 << blockHash;
     ss2 << aux;
-    arith_uint256 hash3 = UintToArith256(ss2.GetHash());
+    arith_uint256 hash3 = Modulo256(UintToArith256(ss2.GetHash()),prime);
 
     return (hash3 > hash2 ? hash3 - hash2 : hash2 - hash3);
+
 }
+
 
 void CMasternode::Check(bool fForce)
 {
@@ -223,7 +228,11 @@ void CMasternode::Check(bool fForce)
         }
         return;
     }
-
+   
+    if(!isValidCollateral()){
+        nActiveState = MASTERNODE_OUTPOINT_SPENT;
+        return;
+    }
     // keep old masternodes on start, give them a chance to receive updates...
     bool fWaitForPing = !masternodeSync.IsMasternodeListSynced() && !IsPingedWithin(MASTERNODE_MIN_MNP_SECONDS);
 
@@ -312,6 +321,7 @@ masternode_info_t CMasternode::GetInfo()
     info.nActiveState = nActiveState;
     info.nProtocolVersion = nProtocolVersion;
     info.fInfoValid = true;
+    info.nCollateral = getCollateralValue();
     return info;
 }
 
@@ -381,10 +391,10 @@ void CMasternode::UpdateLastPaid(const CBlockIndex *pindex, int nMaxBlocksToScan
             if(!ReadBlockFromDisk(block, BlockReading, Params().GetConsensus())) // shouldn't really happen
                 continue;
 
-            CAmount nMasternodePayment = GetMasternodePayment(BlockReading->nHeight, block.vtx[0].GetValueOut());
-
+//            CMasternode *mnode = mnodeman.Find(mnpayee);
+//           CAmount nMasternodePayment = GetMasternodePayment(BlockReading->nHeight, block.vtx[0].GetValueOut(), mnode->getCollateralValue());           
             BOOST_FOREACH(CTxOut txout, block.vtx[0].vout)
-                if(mnpayee == txout.scriptPubKey && nMasternodePayment == txout.nValue) {
+                if(mnpayee == txout.scriptPubKey ) {   //&& nMasternodePayment == txout.nValue
                     nBlockLastPaid = BlockReading->nHeight;
                     nTimeLastPaid = BlockReading->nTime;
                     LogPrint("masternode", "CMasternode::UpdateLastPaidBlock -- searching for block with payment to %s -- found new %d\n", vin.prevout.ToStringShort(), nBlockLastPaid);
@@ -625,8 +635,8 @@ bool CMasternodeBroadcast::CheckOutpoint(int& nDos)
             LogPrint("masternode", "CMasternodeBroadcast::CheckOutpoint -- Failed to find Masternode UTXO, masternode=%s\n", vin.prevout.ToStringShort());
             return false;
         }
-        if(coins.vout[vin.prevout.n].nValue != 10000 * COIN) {
-            LogPrint("masternode", "CMasternodeBroadcast::CheckOutpoint -- Masternode UTXO should have 10000 BTN, masternode=%s\n", vin.prevout.ToStringShort());
+        if(!mnodeman.IsValidCollateral(coins.vout[vin.prevout.n].nValue)) {
+            LogPrint("masternode", "CMasternodeBroadcast::CheckOutpoint -- Masternode UTXO should have 10000 BTNX or 50000 BTNX, masternode=%s\n", vin.prevout.ToStringShort());
             return false;
         }
         if(chainActive.Height() - coins.nHeight + 1 < Params().GetConsensus().nMasternodeMinimumConfirmations) {
@@ -920,4 +930,19 @@ void CMasternode::FlagGovernanceItemsAsDirty()
     for(size_t i = 0; i < vecDirty.size(); ++i) {
         mnodeman.AddDirtyGovernanceObjectHash(vecDirty[i]);
     }
+}
+
+
+bool CMasternode::isValidCollateral(){
+      return mnodeman.IsValidCollateral(getCollateralValue());      
+}
+
+CAmount CMasternode::getCollateralValue(){
+    CCoins coins;
+    if(!pcoinsTip->GetCoins(vin.prevout.hash, coins) ||
+           (unsigned int)vin.prevout.n>=coins.vout.size() ||
+           coins.vout[vin.prevout.n].IsNull()) {
+            return 0;
+    }
+    return coins.vout[vin.prevout.n].nValue;
 }
